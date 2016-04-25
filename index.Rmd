@@ -5,18 +5,136 @@ date: "April 24, 2016"
 output: html_document
 ---
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r global_options, echo=FALSE, warning=FALSE, message=FALSE, error=TRUE}
+# Load the knitr librabry, and set global options silently.
+require(knitr)
+opts_chunk$set(warning=FALSE, message=FALSE, error=TRUE)
+```
+```{r libraries, echo=FALSE}
+library(knitr) 
+library(plyr) 
+library(ggplot2) 
+library(caret) 
+library(rpart)
+library(gbm) 
+library(nnet)
+library(randomForest) 
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+```
+## Overview
 
-```{r}
-summary(cars)
+The data for this effort was produced by collecting a variety of measurements from study participants who were performing unilateral dumbbell biceps curls.  The participants would each perform the biceps curls with proper technique, and then would attempt the curls with each of four different techniques that violated the specifications in a specific way.  These were the five techniques, each of which were given a specific class designation.
+
+* Class A - Exactly according to specification
+* Class B - Throwing the elbows to the front
+* Class C - Lifting the dumbbell only halfway
+* Class D - Lowering the dumbbell only halfway
+* Class E - Throwing the hips to the front
+
+Data were collected by accelerometers positioned on the belt, forearm, arm, and dumbbell for each of six participants.  The data was largely positional and motion data from each of the accelerometers, measuring phenomena such as roll, pitch, yaw, gyros, and magnet components in each of the three planar dimension x, y, and z.  The goal of this assignment is to analyze these collected data fromt these participants with a variety of practical machine learning techniques, select the technique that produces the best fit, and then predict the class of exercise (A, B, C, D, or E) for a separate set of observations.
+
+## The Data
+
+Data sets were provided on the Coursera website.  A large training data set was provided along with a testing data set that provided only 20 test cases for prediction.  These data sets were downloaded and stored in the local directory with R source code, so that it could be read and analyzed according to the discussion below.
+
+```{r loadData}
+## read in the initial data sets from the local directory
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
 ```
 
-You can also embed plots, for example:
+## Exploring and Cleaning The Data
+With the data loaded, a quick exploration shows that the data is grouped into "windows" where summary statistics are provided at the conclusion of each window. This leads us to two possible choices for selecting a data set.  Option A: If we want to predict based on the more granular data measurements (pitch, yaw, roll, etc.), these summary measurements will not add anything to our data, because they are not relevant to the individual rows in the data set.  Option B: If we want to predict based on the statistical data per window, we could throw out all of the other rows.  Unfortunately for Option B, the testing data set only includes the granular data measurements, so it is not clear how we would use that approach.  Therefore, we must dismiss all of the statistical summary information that was provided (columns related to avg, stddev, var, kurtosis, skewness, etc.).  Within the code block below, we "clean" the data by removing these columns.
 
-```{r, echo=FALSE}
-plot(cars)
+```{r cleanData}
+set.seed(54321)
+
+## data set includes some summary statistical data -- throw this data out
+trainsub1 <- training[training$new_window != "yes", ]
+## Now there are some empty columns - this na data will cause errors so remove these columns
+trainsub2 <- trainsub1[,colSums(is.na(trainsub1))<nrow(trainsub1)]
+trainsub3 <- Filter(function(x)!all(is.na(x)), trainsub2)
+## Not all of the empty columns were removed - select only those columns desired for analysis
+trainsub4 <- trainsub3[ , c(8:11, 21:42,49:51,61:73,83:93)]
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+In trainsub4, we have reduced our data matrix from 160 columns down to 53 columns that will be used for modeling.  This reduction in size will improve the performance of our algorithms.  
+
+Now, we have a final testing or "Validation" data set provided, but we will need to partition our trainsub4 into two groups: one for training and one for testing against each of our models.  We choose to put 70% of the data into the training set.
+
+```{r partitionData}
+inTrain <- createDataPartition(y=trainsub4$classe, p=0.7, list=FALSE)
+
+trainset <- trainsub4[inTrain,]
+testset <- trainsub4[-inTrain,]
+
+dim(trainset)
+dim(testset)
+```
+
+## Developing and Testing Prediction Models
+
+We will investigate four different models and choose the best one to use on the validation test set.
+
+* Recursive Partitioning (RPART)
+* Generalized Boosting (GBM)
+* Random Forest (RF)
+* Neural Networking (NNET)
+
+```{r rpart}
+rpartFit <- train(classe ~ ., method = "rpart", data = trainset)
+print(rpartFit$finalModel)
+rpartMat <- confusionMatrix(testset$classe, predict(rpartFit, testset))
+rpartMat$overall
+```
+
+Next, we attempt with Generalized Boosting...
+
+```{r gbm}
+gbmFit <- train(classe ~ ., method = "gbm", data = trainset, verbose=FALSE)
+print(gbmFit$finalModel)
+gbmMat <- confusionMatrix(testset$classe, predict(gbmFit, testset))
+gbmMat$overall
+```
+
+Third, we will build and test the Random Forest model.
+
+```{r rf}
+rfFit <- train(classe ~ ., method = "rf", data = trainset)
+print(rfFit$finalModel)
+rfMat <- confusionMatrix(testset$classe, predict(rfFit, testset))
+rfMat$overall
+```
+
+Finally, we will try out a neural network model.
+
+```{r nnet}
+netFit <- train(classe ~ ., method = "gbm", data = trainset, verbose=FALSE)
+print(netFit$finalModel)
+netMat <- confusionMatrix(testset$classe, predict(netFit, testset))
+netMat$overall
+```
+
+## Results and Analysis
+
+Of the four models, the Random Forest gives the best accuracy (99.3%) on the testing partition from the training data.  According to the analysis provided by course teaching assistants, this level of model accuracy should yield approximately an 87% probability of predicting all 20 values correct in the validation set (the original testing data set that was provided).  We chose to run this data through the validation set and found that 20 out of 20 class outcomes were predicted correctly by the Random Forest model.
+
+Finally, we provide some additional information about the selected model. 
+
+```{r finalInfo}
+print(rfFit)
+
+# Confusion Matrix
+rfFit$finalModel
+```
+
+The estimated out-of-sample error rate can be measured with the code below.
+```{r OOSerrorRate}
+testPred <- predict(rfFit, testset)
+testMat <- confusionMatrix(testset$classe, testPred)
+testMat
+# out of sample error estimate
+oosTest <- sum(testPred == testset$classe)/length(testPred)
+```
+
+The out-of-sample error rate can be calculated as `r (1-oosTest)*100.0`%.
